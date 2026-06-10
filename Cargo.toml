@@ -1,4 +1,6 @@
 [package]
+description = "ternary-sandpile - SuperInstance ecosystem crate"
+repository = "https://github.com/SuperInstance/ternary-sandpile"
 name = "ternary-sandpile"
 version = "0.1.0"
 edition = "2021"
