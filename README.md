@@ -1,78 +1,122 @@
-# ternary-sandpile
+# Ternary Sandpile
 
-**Drop grains, watch avalanches, find the power law. The universe's favorite distribution, in three states.**
+Self-organized criticality (SOC) on a 2D grid, implementing the classical Abelian sandpile model with a ternary-aware interface. Grains accumulate until a cell reaches **critical height 4**, then topples — distributing one grain to each of its four cardinal neighbors. This simple rule produces fractal patterns, power-law avalanche distributions, and $1/f$ noise.
 
-The Abelian sandpile model is the canonical example of self-organized criticality (SOC). Start with a flat grid. Drop grains of sand one at a time at random positions. When a cell reaches height 4, it *topples* — giving one grain to each of its 4 neighbors. Those neighbors might also topple. Cascades — *avalanches* — propagate across the grid.
+## Why It Matters
 
-The remarkable property: without any parameter tuning, the system *self-organizes* to a critical state where avalanche sizes follow a power law. Small avalanches are common. Huge avalanches are rare but inevitable. This is the same distribution as earthquakes, stock market crashes, neural avalanches, and extinction events. The universe keeps choosing this distribution. The sandpile shows why.
+The Abelian sandpile model (ASM), introduced by Bak, Tang, and Wiesenfeld in 1987, is the canonical example of **self-organized criticality** — a system that naturally evolves to a critical state without external tuning. It appears in:
 
-## What's Inside
+- **Neural avalanches**: cortical activity follows sandpile-like power laws ($p(s) \sim s^{-\tau}$, $\tau \approx 1.5$)
+- **Earthquake dynamics**: the Gutenberg-Richter law emerges from sandpile-like stress redistribution
+- **Financial markets**: crash cascades propagate like sandpile avalanches
+- **GPU fleet load balancing**: when work items pile up on overloaded nodes, redistribution cascades follow the same dynamics
 
-- **`Sandpile`** — the grid of u8 heights. `drop(x, y)` adds one grain
-- **`topple()`** — one round of toppling. Returns avalanche size
-- **`stabilize()`** — topple repeatedly until stable. Returns total avalanche size
-- **`is_stable()`** — are any cells at or above critical height?
-- **`height_at(x, y)`** — read current height
-- **`total_grains()`** — conservation check (grains are never created or destroyed)
-- **`avalanche_series(drops)`** — drop N grains, record each avalanche size
-- **`toppling_histogram()`** — which cells topple most? The "hot spots"
+The ternary connection: the SuperInstance ecosystem maps agent states to $\{-1, 0, +1\}$, and the sandpile provides the **background dynamics** — stress accumulation (dropping grains), critical redistribution (toppling), and relaxation (stabilization).
 
-## Quick Example
+## How It Works
+
+### The Toppling Rule
+
+A cell at position $(x, y)$ with height $h$ **topples** when $h \geq 4$:
+
+$$\text{topple}(x, y): \quad h_{(x,y)} \leftarrow h_{(x,y)} - 4, \quad h_{(x\pm1,y)} \leftarrow h_{(x\pm1,y)} + 1, \quad h_{(x,y\pm1)} \leftarrow h_{(x,y\pm1)} + 1$$
+
+At boundaries, grains that would go outside the grid are **lost** (open boundary conditions).
+
+### Avalanche Dynamics
+
+An **avalanche** is a cascade of topples triggered by a single grain drop. The total avalanche size $a$ is the number of cells that toppled.
+
+Avalanches exhibit a **power-law distribution** at the critical state:
+
+$$P(a > s) \sim s^{-\beta}, \quad \beta \approx 0.25 \text{ in 2D}$$
+
+This means most avalanches are small, but occasionally a massive cascade sweeps the entire grid — the hallmark of criticality.
+
+### Abelian Property
+
+The model is **Abelian**: the final stable state is independent of the order in which cells topple. This means:
+
+- You can process topples in any order
+- Parallelization is safe (process all unstable cells simultaneously)
+- The `topple()` method does one synchronous round; calling it repeatedly until stable yields the same result as any other order
+
+### Conservation
+
+Grains are conserved except at boundaries. For an $L \times L$ grid with $D$ drops at center:
+
+$$\text{grains retained} = D - \text{boundary loss}$$
+
+For large $L$, boundary loss scales as $O(\sqrt{D})$.
+
+### Complexity
+
+| Operation | Time | Space |
+|---|---|---|
+| `drop(x, y)` | $O(1)$ | $O(1)$ |
+| `topple()` (one round) | $O(W \cdot H)$ | $O(W \cdot H)$ |
+| Full stabilization | $O(a)$ where $a$ = avalanche size | $O(1)$ |
+| `avalanche_history(drops)` | $O(drops \cdot \bar{a})$ | $O(drops)$ |
+| `is_stable()` | $O(W \cdot H)$ | $O(1)$ |
+
+## Quick Start
 
 ```rust
-use ternary_sandpile::*;
+use ternary_sandpile::Sandpile;
 
-let mut pile = Sandpile::new(20, 20);
+let mut pile = Sandpile::new(9, 9);
 
-// Drop 1000 grains at the center
-let mut sizes = Vec::new();
-for _ in 0..1000 {
-    pile.drop(10, 10);
-    let avalanche = pile.stabilize();
-    sizes.push(avalanche);
+// Drop grains at center and track avalanches
+let avalanches = pile.avalanche_history(50);
+
+for (i, &size) in avalanches.iter().enumerate() {
+    println!("Drop {}: avalanche size = {}", i + 1, size);
 }
 
-// The distribution follows a power law
-let max = sizes.iter().max().unwrap();
-let min = sizes.iter().filter(|&&a| a > 0).min().unwrap();
-println!("Avalanches from {} to {} cells", min, max);
+// Check final state
+println!("Stable: {}", pile.is_stable());
+println!("Center height: {}", pile.height_at(4, 4));
 
-// Where are the hot spots?
-let hist = pile.toppling_histogram();
-// Center topples most — the epicenter of chaos
+// Manual control
+let mut p = Sandpile::new(3, 3);
+for _ in 0..4 { p.drop(1, 1); }  // Reach critical
+assert!(!p.is_stable());
+let avalanche = p.topple();       // Returns 1
+assert_eq!(p.height_at(1, 1), 0); // Reset to 0
+assert_eq!(p.height_at(0, 1), 1); // Neighbor gained 1
 ```
 
-## The Deeper Truth
+## API
 
-**Criticality is free.** You don't tune a temperature parameter (unlike Ising). You don't adjust coupling (unlike Kuramoto). You just drop grains and the system *finds* criticality on its own. This is why SOC matters — it explains how complex, scale-invariant behavior emerges from simple local rules without external control.
+### `Sandpile`
 
-The power law is the signature. Plot log(size) vs log(frequency): straight line. That line is the fingerprint of self-organized criticality — and it's the same fingerprint found in neural avalanches (measured in cortical tissue), solar flares, and the Gutenberg-Richter earthquake law. The sandpile isn't just a model. It's a lens for seeing the hidden order in apparently random catastrophes.
+| Method | Description |
+|---|---|
+| `new(width, height)` | Create zero-initialized grid |
+| `drop(x, y)` | Add one grain at $(x, y)$ |
+| `topple() → usize` | One synchronous toppling round; returns avalanche size |
+| `is_stable() → bool` | All cells below critical height |
+| `avalanche_history(drops) → Vec<usize>` | Drop at center repeatedly, returning each avalanche size |
+| `height_at(x, y) → u8` | Query cell height |
+| `critical_height() → u8` | Returns 4 (the toppling threshold) |
 
-The ternary mapping: cells below critical height are "stable" (0 — quiet). Cells at height ≥4 are "critical" (+1 — about to topple, propagating change). Recently toppled cells are "depleted" (-1). The boundary between stable and critical is where all the action is — the *edge of chaos*.
+## Architecture Notes
 
-**Use cases:**
-- **Complex systems research** — the canonical SOC model
-- **Neuroscience** — neural avalanche dynamics follow the same power law
-- **Seismology** — earthquake statistics from simple rules
-- **Financial modeling** — market crashes as SOC avalanches
-- **Art** — sandpile toppling patterns are visually stunning
-- **Education** — the most accessible example of emergence
+Within the **γ + η = C** framework:
 
-## See Also
+- **γ (gamma)** — the grain: each unit of "stress" placed on the system (analogous to a ternary agent signaling `+1`)
+- **η (eta)** — the toppling rule: the environment's nonlinear response — redistribution cascades that propagate stress across the neighbor graph
+- **C** — **criticality**: the system self-organizes to the critical state where it exhibits maximum dynamic range and information processing capacity (the edge of chaos)
 
-- **ternary-fire** — fire is SOC with a biological clock (growth → burn → regrow)
-- **ternary-ising** — phase transitions (SOC with a temperature dial)
-- **ternary-percolation** — spatial connectivity (critical thresholds without dynamics)
-- **ternary-life** — complex dynamics without criticality
-- **ternary-irradiate** — cascade dynamics with inverse-square propagation
-- **ternary-visualizer** — render sandpile patterns as ASCII art
+The implementation is `#![forbid(unsafe_code)]` with zero external dependencies.
 
-## Install
+## References
 
-```bash
-cargo add ternary-sandpile
-```
+1. Bak, P., Tang, C., & Wiesenfeld, K. (1987). "Self-Organized Criticality: An Explanation of 1/f Noise." *Physical Review Letters*, 59(4), 381. — Original sandpile paper.
+2. Dhar, D. (1990). "Self-Organized Critical State of Sandpile Automaton Models." *Physical Review Letters*, 64(14), 1613. — Proof of the Abelian property.
+3. Pruessner, G. (2012). *Self-Organised Criticality: Theory, Models and Characterisation*. Cambridge University Press. — Comprehensive textbook on SOC.
+4. Beggs, J. M., & Plenz, D. (2003). "Neuronal Avalanches in Neocortical Circuits." *Journal of Neuroscience*, 23(35), 11167-11177. — Power laws in neural activity.
 
 ## License
 
-MIT
+MIT OR Apache-2.0
